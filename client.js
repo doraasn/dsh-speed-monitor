@@ -39,9 +39,8 @@ window.__ModuleLoader__.load({
       recent: '最近采样',
       latest: '最新',
       time: '时间',
-      chartTtfb: '首字节 TTFB（ms）',
-      chartTotal: '总耗时（ms）',
-      chartTps: '端到端吞吐（tok/s）',
+      chartTitle: '总览（左轴 ms · 右轴 tok/s）',
+      chartNote: '实线 首字节 · 虚线 总耗时（ms）· 点线 吞吐（tok/s）',
       failed: '失败',
     };
 
@@ -90,66 +89,93 @@ window.__ModuleLoader__.load({
       return buildProviders(namespaces);
     }
 
-    /** 多序列折线图：每个目标一条线，自动配色。 */
-    function drawChart(canvas, series, unit) {
+    /** 双轴合图：左轴 ms 画首字节与总耗时，右轴 tok/s 画吞吐；每个模型一种颜色。 */
+    function drawCombined(canvas, series) {
       if (!canvas) return;
       const dpr = window.devicePixelRatio || 1;
-      const width = canvas.clientWidth || 600;
-      const height = canvas.clientHeight || 170;
+      const width = canvas.clientWidth || 700;
+      const height = canvas.clientHeight || 220;
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       const ctx = canvas.getContext('2d');
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, width, height);
 
-      const all = series.flatMap((item) => item.points.map((point) => point.value)).filter((value) => Number.isFinite(value));
-      if (!all.length) return;
+      const lat = [];
+      const tps = [];
+      for (const item of series) {
+        for (const point of item.points) {
+          if (Number.isFinite(point.ttfb)) lat.push(point.ttfb);
+          if (Number.isFinite(point.total)) lat.push(point.total);
+          if (Number.isFinite(point.tps)) tps.push(point.tps);
+        }
+      }
+      if (!lat.length && !tps.length) return;
 
-      const pad = { l: 48, r: 12, t: 10, b: 22 };
+      const pad = { l: 50, r: 54, t: 10, b: 22 };
       const plotW = width - pad.l - pad.r;
       const plotH = height - pad.t - pad.b;
-      let min = Math.min(...all);
-      let max = Math.max(...all);
-      if (min === max) {
-        min = Math.max(0, min - 1);
-        max += 1;
+
+      let latMin = lat.length ? Math.min(...lat) : 0;
+      let latMax = lat.length ? Math.max(...lat) : 1;
+      if (latMin === latMax) {
+        latMin = Math.max(0, latMin - 1);
+        latMax += 1;
       }
-      const margin = (max - min) * 0.15;
-      min = Math.max(0, min - margin);
-      max += margin;
+      const latMargin = (latMax - latMin) * 0.15;
+      latMin = Math.max(0, latMin - latMargin);
+      latMax += latMargin;
+      const tpsMax = Math.max(1, ...(tps.length ? tps : [1])) * 1.15;
 
       const longest = Math.max(...series.map((item) => item.points.length), 1);
       const x = (index) => pad.l + (longest === 1 ? plotW / 2 : (index / (longest - 1)) * plotW);
-      const y = (value) => pad.t + plotH - ((value - min) / (max - min)) * plotH;
+      const yLat = (value) => pad.t + plotH - ((value - latMin) / (latMax - latMin)) * plotH;
+      const yTps = (value) => pad.t + plotH - (value / tpsMax) * plotH;
 
-      ctx.strokeStyle = LINE;
-      ctx.fillStyle = TEXT_2;
       ctx.font = '10px sans-serif';
       ctx.lineWidth = 1;
       for (let step = 0; step <= 4; step += 1) {
-        const value = min + ((max - min) * step) / 4;
-        const lineY = Math.round(y(value)) + 0.5;
+        const ratio = step / 4;
+        const lineY = Math.round(pad.t + plotH - ratio * plotH) + 0.5;
+        ctx.strokeStyle = LINE;
         ctx.beginPath();
         ctx.moveTo(pad.l, lineY);
         ctx.lineTo(width - pad.r, lineY);
         ctx.stroke();
-        ctx.fillText(String(Math.round(value)), 4, lineY + 3);
+        ctx.fillStyle = TEXT_2;
+        ctx.textAlign = 'right';
+        ctx.fillText(String(Math.round(latMin + (latMax - latMin) * ratio)), pad.l - 6, lineY + 3);
+        ctx.textAlign = 'left';
+        ctx.fillText(String(Math.round(tpsMax * ratio)), width - pad.r + 6, lineY + 3);
       }
+      ctx.textAlign = 'left';
+      ctx.fillStyle = TEXT_2;
+      ctx.fillText('ms', 6, pad.t + 8);
+      ctx.fillText('tok/s', width - pad.r + 6, pad.t + 8);
 
-      for (const item of series) {
-        const points = item.points.filter((point) => Number.isFinite(point.value));
-        if (!points.length) continue;
+      const stroke = (item, pick, scale, dash, widthPx, dots) => {
+        const points = item.points.map((point, index) => ({ index, value: pick(point) })).filter((point) => Number.isFinite(point.value));
+        if (!points.length) return;
         ctx.strokeStyle = item.color;
-        ctx.lineWidth = 1.6;
+        ctx.lineWidth = widthPx;
+        ctx.setLineDash(dash);
         ctx.beginPath();
-        points.forEach((point, index) => (index ? ctx.lineTo(x(index), y(point.value)) : ctx.moveTo(x(index), y(point.value))));
+        points.forEach((point, index) => (index ? ctx.lineTo(x(point.index), scale(point.value)) : ctx.moveTo(x(point.index), scale(point.value))));
         ctx.stroke();
+        ctx.setLineDash([]);
+        if (!dots) return;
         ctx.fillStyle = item.color;
-        points.forEach((point, index) => {
+        points.forEach((point) => {
           ctx.beginPath();
-          ctx.arc(x(index), y(point.value), 2, 0, Math.PI * 2);
+          ctx.arc(x(point.index), scale(point.value), 1.8, 0, Math.PI * 2);
           ctx.fill();
         });
+      };
+
+      for (const item of series) {
+        stroke(item, (point) => point.total, yLat, [5, 4], 1.2, false);
+        stroke(item, (point) => point.ttfb, yLat, [], 1.6, true);
+        stroke(item, (point) => point.tps, yTps, [1.5, 3], 1.3, false);
       }
 
       const first = series.find((item) => item.points.length)?.points ?? [];
@@ -162,7 +188,6 @@ window.__ModuleLoader__.load({
         ctx.fillText(label, Math.min(Math.max(x(index), pad.l + 16), width - pad.r - 16), height - 5);
       });
       ctx.textAlign = 'left';
-      if (unit) ctx.fillText(unit, pad.l + 4, pad.t + 9);
     }
 
     /** 面板：配置 + 三张曲线 + 最新值。 */
@@ -173,9 +198,7 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState('');
       const [sampling, setSampling] = useState(false);
       const [ready, setReady] = useState(false);
-      const ttfbRef = useRef(null);
-      const totalRef = useRef(null);
-      const tpsRef = useRef(null);
+      const chartRef = useRef(null);
 
       const pullState = useCallback(async () => {
         const response = await fetch(`${API}/state`, { cache: 'no-store' });
@@ -236,7 +259,7 @@ window.__ModuleLoader__.load({
 
       const colorOf = (targetId) => PALETTE[Math.max(0, config.targets.findIndex((item) => item.id === targetId)) % PALETTE.length];
 
-      const seriesOf = (pick) => config.targets.map((target) => ({
+      const series = config.targets.map((target) => ({
         id: target.id,
         model: target.model,
         color: colorOf(target.id),
@@ -244,16 +267,12 @@ window.__ModuleLoader__.load({
           .filter((item) => item.target === target.id)
           .slice(0, 120)
           .reverse()
-          .map((item) => ({ ts: item.ts, value: pick(item) })),
+          .map((item) => ({ ts: item.ts, ttfb: item.ttfb_ms, total: item.total_ms, tps: item.tps_e2e })),
       }));
 
       useEffect(() => {
         if (!ready) return undefined;
-        const redraw = () => {
-          drawChart(ttfbRef.current, seriesOf((item) => item.ttfb_ms), 'ms');
-          drawChart(totalRef.current, seriesOf((item) => item.total_ms), 'ms');
-          drawChart(tpsRef.current, seriesOf((item) => item.tps_e2e), 'tok/s');
-        };
+        const redraw = () => drawCombined(chartRef.current, series);
         redraw();
         window.addEventListener('resize', redraw);
         return () => window.removeEventListener('resize', redraw);
@@ -366,16 +385,10 @@ window.__ModuleLoader__.load({
         config.targets.length === 0
           ? h('div', { style: { color: TEXT_2, fontSize: 11 } }, T.noTargets)
           : h('div', { style: { display: 'flex', flexDirection: 'column' } }, rows),
-        h('div', { style: { display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 4 } },
-          h('div', { style: { flex: '1 1 280px', minWidth: 260 } },
-            h('div', { style: { color: TEXT_2, fontSize: 11, marginBottom: 4 } }, T.chartTtfb),
-            h('canvas', { ref: ttfbRef, style: { width: '100%', height: 160, display: 'block' } })),
-          h('div', { style: { flex: '1 1 280px', minWidth: 260 } },
-            h('div', { style: { color: TEXT_2, fontSize: 11, marginBottom: 4 } }, T.chartTotal),
-            h('canvas', { ref: totalRef, style: { width: '100%', height: 160, display: 'block' } })),
-          h('div', { style: { flex: '1 1 280px', minWidth: 260 } },
-            h('div', { style: { color: TEXT_2, fontSize: 11, marginBottom: 4 } }, T.chartTps),
-            h('canvas', { ref: tpsRef, style: { width: '100%', height: 160, display: 'block' } })),
+        h('div', { style: { marginTop: 4 } },
+          h('div', { style: { color: TEXT_2, fontSize: 11, marginBottom: 4 } }, T.chartTitle),
+          h('canvas', { ref: chartRef, style: { width: '100%', height: 220, display: 'block' } }),
+          h('div', { style: { color: TEXT_2, fontSize: 11, marginTop: 4 } }, T.chartNote),
         ),
         h('div', { style: { display: 'flex', gap: 14, flexWrap: 'wrap', color: TEXT_2, fontSize: 11 } },
           config.targets.map((target) => h('span', { key: target.id, style: { display: 'inline-flex', alignItems: 'center', gap: 5 } },
