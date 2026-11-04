@@ -1,5 +1,11 @@
-# CHANGELOG
+﻿# CHANGELOG
 
+## 0.5.2
+
+- 布局改为全屏：去掉 640px 宽的内容栏，顶部区固定（标题 + 配置卡片），图表区 lex: 1 填满剩余高度，下方不再留白。
+- 控件改用 dsh-plugin-dev 技能的 client-ui kit（Section / SettingsCard / SettingRow / Button），与 DSH 设置页同一套 token、字号与控件高度。
+- 图例移到图表上方；每个模型恢复三条线：上区实线首字节 + 细线总耗时，下区吞吐。
+- canvas 跟随容器尺寸重绘（ResizeObserver）。
 ## 0.5.1
 
 修复「切换模型后图例变了、曲线没变」。
