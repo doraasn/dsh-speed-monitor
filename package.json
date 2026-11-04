@@ -1,7 +1,7 @@
 {
   "name": "dsh-speed-monitor",
-  "version": "0.1.0",
-  "description": "DSH 插件「速度监控」：每 5 分钟采样一次 OpenAI 兼容中转的流式速度，侧栏卡片看首字节与总耗时，设置页看曲线。",
+  "version": "0.2.0",
+  "description": "DSH 插件「速度监控」：侧栏入口点开右侧面板，显示每 5 分钟采样的中转流式速度曲线。",
   "type": "module",
   "license": "MIT",
   "author": "Y77H",
