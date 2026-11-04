@@ -1,15 +1,15 @@
 /**
  * Host half of dsh-speed-monitor.
  *
- * 每 5 分钟对 OpenAI 兼容中转（默认 AstraHub）跑一轮流式请求，记录
- * 首字节（TTFB）、解码窗口与总耗时，追加到 ~/.dsh/storages/speed-monitor.jsonl。
+ * 每 1 分钟（可配）对每个已选模型跑一轮流式请求，记录首字节 / 解码窗口 / 总耗时。
+ * 模型清单来自 DSH 自身的设置（Client 通过 /api/settings/describe 拿到后推给本进程），
+ * 密钥由 apiKeyEnv 指向 ~/.dsh/.credentials.yaml 里的字段，只在宿主侧使用。
  *
- * 对外接口（Client 通过它们取数）：
- *   GET  /dsh-speed/api/history   最近采样记录
- *   POST /dsh-speed/api/sample    立即采样一轮
- *
- * 密钥只在本进程内使用，不回传浏览器；默认从 ~/.dsh/.credentials.yaml 的
- * ASTRA_HUB_API_KEY 读取。
+ * 对外接口：
+ *   GET  /dsh-speed/api/state      配置 + 可用模型 + 历史
+ *   POST /dsh-speed/api/providers  Client 推送 DSH 模型清单
+ *   POST /dsh-speed/api/config     保存目标列表与采样间隔
+ *   POST /dsh-speed/api/sample     立即采样（可只采一个目标）
  */
 
 import fs from 'node:fs';
@@ -20,25 +20,22 @@ export const name = 'speed-monitor';
 export const inject = ['webServer'];
 
 const ROUTE_PREFIX = '/dsh-speed';
-const HISTORY_PATH = `${ROUTE_PREFIX}/api/history`;
-const SAMPLE_PATH = `${ROUTE_PREFIX}/api/sample`;
-/** 内存里最多保留的历史条数，落盘不受限制。 */
-const KEEP = 2000;
+const KEEP = 5000;
 
 const DEFAULTS = {
-  baseUrl: 'https://www.astrahub-ai.com/v1',
-  model: 'deepseek-v4.1-flash',
-  credential: 'ASTRA_HUB_API_KEY',
-  intervalMinutes: 5,
-  runs: 3,
+  intervalMinutes: 1,
+  runs: 1,
   maxTokens: 300,
-  effort: 'low',
   prompt: '写一段 100 字左右介绍杭州的文字，直接给正文。',
 };
 
-const STORE_DIR = path.join(os.homedir(), '.dsh', 'storages');
-const STORE_FILE = path.join(STORE_DIR, 'speed-monitor.jsonl');
-const CREDENTIALS_FILE = path.join(os.homedir(), '.dsh', '.credentials.yaml');
+/** 支持 DSH_HOME 覆盖，便于用隔离的探针环境测试。 */
+const DSH_HOME = process.env.DSH_HOME ? path.resolve(process.env.DSH_HOME) : path.join(os.homedir(), '.dsh');
+const STORE_DIR = path.join(DSH_HOME, 'storages');
+const CONFIG_FILE = path.join(STORE_DIR, 'speed-monitor.json');
+const HISTORY_FILE = path.join(STORE_DIR, 'speed-monitor.jsonl');
+const PROVIDERS_FILE = path.join(STORE_DIR, 'speed-monitor.providers.json');
+const CREDENTIALS_FILE = path.join(DSH_HOME, '.credentials.yaml');
 
 /** 取中位数，忽略 null。 */
 function median(values) {
@@ -50,6 +47,7 @@ function median(values) {
 
 /** 从凭据文件按字段名取 key；读不到返回空串。 */
 function readCredential(field) {
+  if (!field) return '';
   try {
     const text = fs.readFileSync(CREDENTIALS_FILE, 'utf8');
     const match = new RegExp(`^\\s*${field}\\s*:\\s*(\\S+)`, 'm').exec(text);
@@ -57,6 +55,19 @@ function readCredential(field) {
   } catch {
     return '';
   }
+}
+
+function readJson(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
 /** 把 SSE 缓冲区切成完整的 data 行，返回剩余缓冲。 */
@@ -73,18 +84,18 @@ function splitEvents(buffer) {
 
 /**
  * 跑一次流式请求。
- * @returns {Promise<{ok:boolean,ttfb_ms?:number,decode_ms?:number,total_ms?:number,tokens?:number,error?:string}>}
+ * @returns {Promise<object>} 各阶段耗时与用量，失败时带 error
  */
-async function requestOnce(options, apiKey) {
+async function requestOnce(options, url, apiKey, model, effort) {
   const started = Date.now();
   const body = JSON.stringify({
-    model: options.model,
+    model,
     messages: [{ role: 'user', content: options.prompt }],
     stream: true,
     stream_options: { include_usage: true },
     max_tokens: options.maxTokens,
     temperature: 0.3,
-    ...(options.effort ? { reasoning_effort: options.effort } : {}),
+    ...(effort && effort !== 'default' ? { reasoning_effort: effort } : {}),
   });
 
   let ttfb = null;
@@ -92,7 +103,7 @@ async function requestOnce(options, apiKey) {
   let tokens = null;
 
   try {
-    const response = await fetch(`${options.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+    const response = await fetch(`${url.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -151,115 +162,245 @@ async function requestOnce(options, apiKey) {
 }
 
 export function apply(ctx, config = {}) {
-  const options = { ...DEFAULTS, ...config };
-  const apiKey = readCredential(options.credential);
+  const options = { ...DEFAULTS, maxTokens: config.maxTokens || DEFAULTS.maxTokens, prompt: config.prompt || DEFAULTS.prompt };
+  fs.mkdirSync(STORE_DIR, { recursive: true });
 
-  /** 最近采样记录，新的在前。 */
+  /** 目标配置：targets = [{ id, provider, model, effort }] */
+  const saved = readJson(CONFIG_FILE, null);
+  const state = {
+    intervalMinutes: Number(saved?.intervalMinutes) > 0 ? Number(saved.intervalMinutes) : DEFAULTS.intervalMinutes,
+    runs: Number(saved?.runs) > 0 ? Number(saved.runs) : DEFAULTS.runs,
+    targets: Array.isArray(saved?.targets) ? saved.targets.filter((item) => item && item.provider && item.model) : [],
+  };
+
+  /** DSH 模型清单：{ [provider]: { baseURL, apiKeyEnv, models: [{id,name}] } } */
+  let providers = readJson(PROVIDERS_FILE, {}) || {};
+
+  /** 历史记录，新的在前。 */
   const history = [];
   try {
-    fs.mkdirSync(STORE_DIR, { recursive: true });
-    if (fs.existsSync(STORE_FILE)) {
-      const lines = fs.readFileSync(STORE_FILE, 'utf8').split('\n').filter(Boolean).slice(-KEEP);
+    if (fs.existsSync(HISTORY_FILE)) {
+      const lines = fs.readFileSync(HISTORY_FILE, 'utf8').split('\n').filter(Boolean).slice(-KEEP);
       for (const line of lines) {
         try {
           history.unshift(JSON.parse(line));
         } catch {
-          /* 跳过硬损坏行 */
+          /* 跳过损坏行 */
         }
       }
     }
   } catch {
-    /* 存储不可用时退化为纯内存 */
+    /* 存储不可用则退化为纯内存 */
   }
 
-  let lastError = '';
+  let timer = null;
+  let firstTimer = null;
   let running = false;
+  let lastError = '';
 
-  /** 跑一轮（options.runs 次请求）并落盘。 */
-  async function sample() {
+  function nextTargetId() {
+    return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  }
+
+  /** 补上默认目标：AstraHub deepseek-v4.1-flash（没有配置时）。 */
+  function ensureDefaultTarget() {
+    if (state.targets.length) return;
+    const astra = providers['astra-hub'];
+    if (astra?.models?.some((item) => item.id === 'deepseek-v4.1-flash')) {
+      state.targets = [{ id: nextTargetId(), provider: 'astra-hub', model: 'deepseek-v4.1-flash', effort: 'low' }];
+    } else {
+      const [providerName, provider] = Object.entries(providers)[0] || [];
+      if (providerName && provider?.models?.length) {
+        state.targets = [{ id: nextTargetId(), provider: providerName, model: provider.models[0].id, effort: 'low' }];
+      }
+    }
+    if (state.targets.length) writeJson(CONFIG_FILE, state);
+  }
+
+  /** 采样一个目标，runs 次取中位数。 */
+  async function sampleTarget(target) {
+    const provider = providers[target.provider];
+    const apiKey = readCredential(provider?.apiKeyEnv);
+    const base = { ts: new Date().toISOString(), target: target.id, provider: target.provider, model: target.model };
+
+    if (!provider) {
+      return { ...base, ok: 0, runs: 0, error: `未知供应商 ${target.provider}` };
+    }
+    if (!apiKey) {
+      return { ...base, ok: 0, runs: 0, error: `缺少凭据 ${provider.apiKeyEnv || '(未配置 apiKeyEnv)'}` };
+    }
+    if (!provider.baseURL) {
+      return { ...base, ok: 0, runs: 0, error: `供应商 ${target.provider} 没有 baseURL` };
+    }
+
+    const rows = [];
+    for (let index = 0; index < Math.max(1, state.runs); index += 1) {
+      rows.push(await requestOnce(options, provider.baseURL, apiKey, target.model, target.effort));
+    }
+    const ok = rows.filter((row) => row.ok);
+    const record = {
+      ...base,
+      ok: ok.length,
+      runs: rows.length,
+      ttfb_ms: median(rows.map((row) => row.ttfb_ms)),
+      decode_ms: median(rows.map((row) => row.decode_ms)),
+      total_ms: median(rows.map((row) => row.total_ms)),
+      tokens: median(rows.map((row) => row.tokens)),
+      tps_decode: median(rows.map((row) => row.tps_decode)),
+      tps_e2e: median(rows.map((row) => row.tps_e2e)),
+    };
+    const errors = rows.filter((row) => !row.ok).map((row) => row.error);
+    if (errors.length) record.error = errors.join('; ').slice(0, 300);
+    return record;
+  }
+
+  /** 跑一轮全部目标并落盘。 */
+  async function sampleAll(onlyId) {
     if (running) return null;
     running = true;
     try {
-      if (!apiKey) {
-        lastError = `未找到凭据 ${options.credential}（~/.dsh/.credentials.yaml）`;
+      const targets = onlyId ? state.targets.filter((item) => item.id === onlyId) : state.targets;
+      if (!targets.length) {
+        lastError = '还没有配置模型';
         return null;
       }
-      const rows = [];
-      for (let index = 0; index < Math.max(1, options.runs); index += 1) {
-        rows.push(await requestOnce(options, apiKey));
+      if (!Object.keys(providers).length) {
+        lastError = '还没拿到 DSH 的模型清单';
+        return null;
       }
-      const ok = rows.filter((row) => row.ok);
-      const record = {
-        ts: new Date().toISOString(),
-        ok: ok.length,
-        runs: rows.length,
-        ttfb_ms: median(rows.map((row) => row.ttfb_ms)),
-        decode_ms: median(rows.map((row) => row.decode_ms)),
-        total_ms: median(rows.map((row) => row.total_ms)),
-        tokens: median(rows.map((row) => row.tokens)),
-        tps_decode: median(rows.map((row) => row.tps_decode)),
-        tps_e2e: median(rows.map((row) => row.tps_e2e)),
-      };
-      const errors = rows.filter((row) => !row.ok).map((row) => row.error);
-      if (errors.length) record.error = errors.join('; ').slice(0, 300);
-      lastError = record.error || '';
-      history.unshift(record);
+      const records = [];
+      for (const target of targets) {
+        records.push(await sampleTarget(target));
+      }
+      for (const record of records) {
+        history.unshift(record);
+        try {
+          fs.appendFileSync(HISTORY_FILE, `${JSON.stringify(record)}\n`, 'utf8');
+        } catch {
+          /* 写盘失败不影响内存 */
+        }
+      }
       if (history.length > KEEP) history.length = KEEP;
-      try {
-        fs.mkdirSync(STORE_DIR, { recursive: true });
-        fs.appendFileSync(STORE_FILE, `${JSON.stringify(record)}\n`, 'utf8');
-      } catch {
-        /* 写盘失败不影响内存数据 */
-      }
-      return record;
+      lastError = records.map((record) => record.error).filter(Boolean).join('; ').slice(0, 300);
+      return records;
     } finally {
       running = false;
     }
   }
 
+  function restartTimer() {
+    if (timer) clearInterval(timer);
+    if (firstTimer) clearTimeout(firstTimer);
+    const intervalMs = Math.max(30, state.intervalMinutes * 60) * 1000;
+    firstTimer = setTimeout(() => {
+      ensureDefaultTarget();
+      void sampleAll();
+    }, 10_000);
+    timer = setInterval(() => void sampleAll(), intervalMs);
+  }
+  restartTimer();
+
+  const json = (res, status, payload) => {
+    res.statusCode = status;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
+    res.end(JSON.stringify(payload));
+  };
+
+  const readBody = (req) => new Promise((resolve) => {
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+      if (raw.length > 256 * 1024) raw = raw.slice(0, 256 * 1024);
+    });
+    req.on('end', () => resolve(raw));
+    req.on('error', () => resolve(''));
+  });
+
   ctx.webServer.register({
     kind: 'prefix',
     path: ROUTE_PREFIX,
     handler: async (req, res) => {
-      const url = String(req.url || '');
-      const pathname = url.split('?')[0];
-      const json = (status, payload) => {
-        res.statusCode = status;
-        res.setHeader('content-type', 'application/json; charset=utf-8');
-        res.setHeader('cache-control', 'no-store');
-        res.end(JSON.stringify(payload));
-      };
+      const pathname = String(req.url || '').split('?')[0];
+      const method = String(req.method || 'GET').toUpperCase();
 
-      if (pathname === HISTORY_PATH || pathname === `${HISTORY_PATH}/`) {
-        json(200, { items: history.slice(0, 500), error: lastError, model: options.model });
+      if (pathname === `${ROUTE_PREFIX}/api/state`) {
+        json(res, 200, { config: state, providers, items: history.slice(0, 500), error: lastError });
         return;
       }
-      if (pathname === SAMPLE_PATH || pathname === `${SAMPLE_PATH}/`) {
-        if ((req.method || '').toUpperCase() !== 'POST') {
-          json(405, { error: 'method-not-allowed' });
+
+      if (pathname === `${ROUTE_PREFIX}/api/providers` && method === 'POST') {
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch {
+          json(res, 400, { error: 'bad-json' });
           return;
         }
-        const record = await sample();
-        json(record ? 200 : 503, { record, error: lastError });
+        const incoming = body?.providers;
+        if (incoming && typeof incoming === 'object') {
+          providers = incoming;
+          try {
+            writeJson(PROVIDERS_FILE, providers);
+          } catch {
+            /* 忽略写盘失败 */
+          }
+          ensureDefaultTarget();
+        }
+        json(res, 200, { ok: true, targets: state.targets });
         return;
       }
-      json(404, { error: 'not-found' });
+
+      if (pathname === `${ROUTE_PREFIX}/api/config` && method === 'POST') {
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch {
+          json(res, 400, { error: 'bad-json' });
+          return;
+        }
+        if (Number(body?.intervalMinutes) > 0) state.intervalMinutes = Number(body.intervalMinutes);
+        if (Number(body?.runs) > 0) state.runs = Number(body.runs);
+        if (Array.isArray(body?.targets)) {
+          state.targets = body.targets
+            .filter((item) => item && item.provider && item.model)
+            .map((item) => ({
+              id: item.id || nextTargetId(),
+              provider: String(item.provider),
+              model: String(item.model),
+              effort: item.effort ? String(item.effort) : 'low',
+            }));
+        }
+        try {
+          writeJson(CONFIG_FILE, state);
+        } catch {
+          /* 忽略写盘失败 */
+        }
+        restartTimer();
+        json(res, 200, { ok: true, config: state });
+        return;
+      }
+
+      if (pathname === `${ROUTE_PREFIX}/api/sample` && method === 'POST') {
+        let body = {};
+        try {
+          body = JSON.parse((await readBody(req)) || '{}');
+        } catch {
+          body = {};
+        }
+        const records = await sampleAll(body?.id);
+        json(res, records ? 200 : 503, { records, error: lastError });
+        return;
+      }
+
+      json(res, 404, { error: 'not-found' });
     },
   });
 
-  // 首轮延迟 15 秒，避开启动时的繁忙阶段；之后按间隔采样。
-  const intervalMs = Math.max(60, Number(options.intervalMinutes) || 5) * 60 * 1000;
-  const first = setTimeout(() => {
-    void sample();
-  }, 15_000);
-  const timer = setInterval(() => {
-    void sample();
-  }, intervalMs);
-
   if (ctx.effect) {
     ctx.effect(() => () => {
-      clearTimeout(first);
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
+      if (firstTimer) clearTimeout(firstTimer);
     });
   }
 }
