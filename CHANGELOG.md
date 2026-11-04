@@ -1,5 +1,10 @@
 ﻿# CHANGELOG
 
+## 0.6.0
+
+- 客户端 kit 升级为 dsh-plugin-dev 新版（新增 Select / Segmented / IconButton / StatTile / EmptyState），插件删除自带的 Select 实现，统一用 kit 的 Select。
+- 控件风格、字号、控件高度与 DSH 设置页保持一致；后续插件都复用同一套。
+
 ## 0.5.4
 
 - 下拉浮层改为在触发器内绝对定位（去掉 portal），宽度与触发器严格一致（border-box），左边缘对齐、间距 6px，避免界面缩放时坐标错位与压住相邻控件。
