@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Client half of dsh-speed-monitor.
  *
  * 侧栏入口（sidebar.panellist）+ 右侧面板（main）：
@@ -126,16 +126,27 @@ window.__ModuleLoader__.load({
       const muted = token('--dsw-alias-label-secondary', '#9aa3b2');
       const border = token('--dsw-alias-border-l3', 'rgba(140, 150, 165, 0.45)');
       const rgb = /rgba?\(([^)]+)\)/.exec(text);
-      const parts = rgb ? rgb[1].split(',').map((value) => Number(value.trim())) : [230, 233, 238];
+      const hex = /^#([0-9a-f]{3,8})$/i.exec(text);
+      let parts = [230, 233, 238];
+      if (rgb) {
+        parts = rgb[1].split(',').slice(0, 3).map((value) => Number(value.trim()));
+      } else if (hex) {
+        const raw = hex[1];
+        parts = raw.length === 3
+          ? raw.split('').map((ch) => parseInt(ch + ch, 16))
+          : [raw.slice(0, 2), raw.slice(2, 4), raw.slice(4, 6)].map((ch) => parseInt(ch, 16));
+      }
+      if (parts.some((value) => !Number.isFinite(value))) parts = [230, 233, 238];
       const luminance = (0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]) / 255;
-      const dark = luminance < 0.5;
+      // 文字亮 = 深色主题；文字暗 = 浅色主题
+      const dark = luminance >= 0.5;
       return {
         text,
         muted,
         border,
         grid: dark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(15, 17, 21, 0.07)',
         axisText: dark ? 'rgba(255, 255, 255, 0.55)' : 'rgba(15, 17, 21, 0.55)',
-        bg: dark ? 'rgba(255, 255, 255, 0.015)' : 'rgba(15, 17, 21, 0.015)',
+        bg: token('--dsw-alias-bg-primary', '') || (dark ? '#151517' : '#ffffff'),
         tipFill: dark ? 'rgba(30, 33, 39, 0.97)' : 'rgba(255, 255, 255, 0.98)',
         tipStroke: dark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(15, 17, 21, 0.14)',
         tipText: dark ? '#e8ebf0' : '#14171c',
@@ -157,6 +168,10 @@ window.__ModuleLoader__.load({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, width, height);
       const colors = themeColors(canvas);
+      if (colors.bg) {
+        ctx.fillStyle = colors.bg;
+        ctx.fillRect(0, 0, width, height);
+      }
 
       const lat = [];
       const tps = [];

@@ -1,6 +1,6 @@
 {
   "name": "dsh-speed-monitor",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "DSH 插件「速度监控」：侧栏入口点开右侧面板，用 DSH 的模型清单测中转流式速度，默认每分钟一轮，可加多个模型；上区看时延、下区看吞吐，悬浮显示每次采样数值。",
   "type": "module",
   "license": "MIT",
