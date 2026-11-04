@@ -146,7 +146,6 @@ window.__ModuleLoader__.load({
         border,
         grid: dark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(15, 17, 21, 0.07)',
         axisText: dark ? 'rgba(255, 255, 255, 0.55)' : 'rgba(15, 17, 21, 0.55)',
-        bg: token('--dsw-alias-bg-primary', '') || (dark ? '#151517' : '#ffffff'),
         tipFill: dark ? 'rgba(30, 33, 39, 0.97)' : 'rgba(255, 255, 255, 0.98)',
         tipStroke: dark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(15, 17, 21, 0.14)',
         tipText: dark ? '#e8ebf0' : '#14171c',
@@ -168,11 +167,6 @@ window.__ModuleLoader__.load({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, width, height);
       const colors = themeColors(canvas);
-      if (colors.bg) {
-        ctx.fillStyle = colors.bg;
-        ctx.fillRect(0, 0, width, height);
-      }
-
       const lat = [];
       const tps = [];
       for (const item of series) {
