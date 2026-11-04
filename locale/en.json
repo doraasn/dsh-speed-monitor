@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Speed Monitor",
+    "description": "Samples the streaming speed of an OpenAI-compatible relay every 5 minutes: TTFB and total time on the sidebar card, full charts in settings."
+  }
+}

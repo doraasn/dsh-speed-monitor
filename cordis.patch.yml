@@ -1,0 +1,5 @@
+# dsh-speed-monitor: 每 5 分钟采样一次中转速度（host），并在侧栏与设置页展示（client）。
+- insert:
+    - id: speed-monitor
+      name: dsh-speed-monitor
+      config: {}
