@@ -1,5 +1,10 @@
 ﻿# CHANGELOG
 
+## 0.6.1
+
+- kit 新增 Input（36px、单位后缀、错误态、数字类型、回车提交），`TextField` 改为基于 Input 的组合并保留旧 API。
+- 面板配置区新增「每轮请求数」输入框（1~5，写回 host 的 runs）。
+
 ## 0.6.0
 
 - 客户端 kit 升级为 dsh-plugin-dev 新版（新增 Select / Segmented / IconButton / StatTile / EmptyState），插件删除自带的 Select 实现，统一用 kit 的 Select。
