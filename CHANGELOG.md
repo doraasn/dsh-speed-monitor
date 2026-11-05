@@ -1,5 +1,8 @@
 ﻿# CHANGELOG
 
+## 0.7.3
+
+- 路由注册加幂等保护：热重载时若同名前缀仍被旧实例占用，只记一条 warn 并跳过，不再让整个插件 activate 失败（此前的表现是 webserver: duplicate prefix route "/dsh-speed"，并连带其它插件安装失败）。
 ## 0.7.2
 
 - 采样方法对齐业界做法（参考 term-llm benchmark、llm-speed-test、Artificial Analysis）：
