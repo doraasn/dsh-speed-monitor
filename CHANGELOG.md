@@ -1,5 +1,9 @@
 ﻿# CHANGELOG
 
+## 0.9.6
+
+- 修复面板整页空白：0.9.4 清理未使用组件时把 `ModelCard` 一并删掉，渲染时报 `ModelCard is not defined`。已补回，并加了本地渲染自检。
+
 ## 0.9.5
 
 - 修复插件整体不加载（/dsh-speed/* 全 404、面板没有数据）：0.8.0 引入的 `normalizeTarget` 在 `state` 初始化期间读取 `state`，触发 TDZ 报错让 `apply` 直接抛出。现在先把全局默认值算成局部变量，再构造 `state`；另加 `globalThis` 上的旧路由释放，热重载不会再撞 duplicate prefix。
