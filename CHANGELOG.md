@@ -2,6 +2,10 @@
 
 ## 0.9.5
 
+- 修复插件整体不加载（/dsh-speed/* 全 404、面板没有数据）：0.8.0 引入的 `normalizeTarget` 在 `state` 初始化期间读取 `state`，触发 TDZ 报错让 `apply` 直接抛出。现在先把全局默认值算成局部变量，再构造 `state`；另加 `globalThis` 上的旧路由释放，热重载不会再撞 duplicate prefix。
+
+## 0.9.5
+
 - 修复插件路由整体 404：热重载时先通过 `globalThis[Symbol.for('dsh-speed-monitor.route')]` 释放上一次注册，再注册新路由；注册失败不再被吞掉，直接抛出便于定位。
 - 面板在拿不到模型清单时给出明确提示（DSH 里没配置模型），并禁用「添加模型」。
 
