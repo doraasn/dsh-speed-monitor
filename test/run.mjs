@@ -12,18 +12,21 @@ process.env.DSH_HOME = HOME;
 const { apply } = await import(new URL('../lib/index.js', import.meta.url).href);
 
 let handler = null;
+const SELF_ORIGIN = 'http://127.0.0.1:59681';
+const HOST = '127.0.0.1:59681';
 const ctx = {
-  webServer: { register: (route) => { handler = route.handler; } },
+  webServer: { register: (route) => { handler = route.handler; }, getOrigin: () => SELF_ORIGIN },
   effect: () => () => {},
 };
 apply(ctx, { intervalMinutes: 30 });
 
 /** 造一个假请求，收 JSON。 */
-const call = (url, method = 'GET', body) => new Promise((resolve, reject) => {
+const call = (url, method = 'GET', body, headers = { host: HOST }) => new Promise((resolve, reject) => {
   const listeners = {};
   const req = {
     url,
     method,
+    headers,
     on(event, cb) { listeners[event] = cb; },
     setEncoding() {},
     destroy() {},
@@ -80,6 +83,45 @@ const configFile = path.join(HOME, 'storages', 'speed-monitor.json');
 check('配置文件已写盘', fs.existsSync(configFile));
 check('未知路由 404', (await call('/dsh-speed/api/nope')).status === 404);
 check('sample 需要 POST', (await call('/dsh-speed/api/sample')).status === 404);
+
+// ---- 安全：Host/Origin 守卫 + 体积上限 + 参数夹取 ----
+const rebind = await call('/dsh-speed/api/state', 'GET', undefined, { host: 'evil.example' });
+check('伪造 Host 被拒（rebinding）', rebind.status === 403 && rebind.body.error === 'forbidden-host', `实际 ${rebind.status}`);
+
+const csrf = await call('/dsh-speed/api/providers', 'POST', { providers: {} }, { host: HOST, origin: 'https://evil.example' });
+check('跨站 Origin 被拒（CSRF）', csrf.status === 403 && csrf.body.error === 'forbidden-origin', `实际 ${csrf.status}`);
+
+const nullOrigin = await call('/dsh-speed/api/config', 'POST', {}, { host: HOST, origin: 'null' });
+check('Origin: null 被拒', nullOrigin.status === 403);
+
+const sameOrigin = await call('/dsh-speed/api/state', 'GET', undefined, { host: HOST, origin: SELF_ORIGIN });
+check('同源放行', sameOrigin.status === 200);
+
+const huge = await call('/dsh-speed/api/config', 'POST', 'x'.repeat(300 * 1024), { host: HOST, origin: SELF_ORIGIN });
+check('超大 body 返回 413', huge.status === 413, `实际 ${huge.status}`);
+
+const clamped = await call('/dsh-speed/api/config', 'POST', { runs: 999, intervalMinutes: 0.1 }, { host: HOST, origin: SELF_ORIGIN });
+check('runs 夹取到 10', clamped.body.config.runs === 10, `实际 ${clamped.body.config?.runs}`);
+check('intervalMinutes 不小于 1', clamped.body.config.intervalMinutes === 1, `实际 ${clamped.body.config?.intervalMinutes}`);
+
+// ---- 凭据字段名脱敏：下发打码，回推 `***` 保持原值 ----
+const redacted = await call('/dsh-speed/api/state');
+check('state 里 apiKeyEnv 已打码', redacted.body.providers['astra-hub'].apiKeyEnv === '***', JSON.stringify(redacted.body.providers['astra-hub']));
+
+const echoBack = await call('/dsh-speed/api/providers', 'POST', {
+  providers: { 'astra-hub': { ...redacted.body.providers['astra-hub'] } },
+}, { host: HOST, origin: SELF_ORIGIN });
+check('回推打码值不报错', echoBack.status === 200);
+const providersFile = path.join(HOME, 'storages', 'speed-monitor.providers.json');
+const stored = JSON.parse(fs.readFileSync(providersFile, 'utf8'));
+check('打码回推后原字段名保留', stored['astra-hub'].apiKeyEnv === 'ASTRA_HUB_API_KEY', JSON.stringify(stored['astra-hub']));
+
+const badBase = await call('/dsh-speed/api/providers', 'POST', {
+  providers: { bad: { baseURL: 'file:///c:/x', apiKeyEnv: 'X', models: [{ id: 'm' }] } },
+}, { host: HOST, origin: SELF_ORIGIN });
+check('非法 baseURL 的 provider 被丢弃', badBase.status === 200);
+const afterBad = JSON.parse(fs.readFileSync(providersFile, 'utf8'));
+check('丢弃后原表仍在', afterBad['astra-hub']?.apiKeyEnv === 'ASTRA_HUB_API_KEY');
 
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败`);
 process.exit(failed === 0 ? 0 : 1);

@@ -1,5 +1,11 @@
-﻿# CHANGELOG
+# CHANGELOG
 
+## 0.9.9
+
+- 安全：宿主路由加 Host/Origin 守卫（DNS rebinding 读不到 state，跨站 POST 被拒）。
+- 安全：`/api/state` 里的 `apiKeyEnv` 打码为 `***`；`/api/providers` 把 `***` 解释为「保持原值」，并校验 baseURL 协议与字段长度，整表非法时不清空原配置。
+- 安全：凭据字段名按字面量匹配（限字符集 + 正则转义），`.*` 不能再命中别人的 key。
+- 安全：`runs ≤ 10`、`intervalMinutes ≥ 1`、`targets ≤ 20`，请求体超限直接 413。
 ## 0.9.8
 
 - 说明：本插件是宽布局主面板，**故意不用 `Section`**（它的 640px 上限会压窄图表）；字号与配色仍全部走 `TYPE` / `T`。
