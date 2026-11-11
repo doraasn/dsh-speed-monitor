@@ -84,3 +84,10 @@ DSH 插件「速度监控」：侧栏入口点开后，右侧面板用 **DSH 自
 ## License
 
 MIT
+
+## 安全与限制
+
+- 路由只监听本机回环 `127.0.0.1`，拒绝非回环 Host/Origin（含 `Origin: null`）。
+- 采样只保存**耗时、状态码、供应商 id** 到 `~/.dsh/storages/speed-monitor.jsonl`，不保存响应正文与密钥。
+- 供应商密钥由 `apiKeyEnv` 指向 `~/.dsh/.credentials.yaml` 的字段，只在宿主侧读取；设置接口传回的是掩码（`KEY_ENV_MASK`），不会把真值写回。
+- 采样会真实请求各供应商接口（消耗少量额度），关闭采样或调大间隔即可停止。
