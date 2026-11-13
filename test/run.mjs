@@ -79,6 +79,16 @@ check('目标落盘', saved.body.config.targets[0].effort === 'none');
 const kept = saved.body.config.targets[0];
 check('每模型字段不丢', kept.intervalMinutes === 7 && kept.runs === 2 && kept.prompt === '自定义任务' && kept.monitor === false, JSON.stringify(kept));
 
+// 监控开关为 false 时不应参与采样：全部关闭 → 没有可采目标
+const skipped = await call('/dsh-speed/api/sample', 'POST', {});
+check('关闭监控的模型不参与采样', skipped.status === 503 && skipped.body.records === null, `实际 ${skipped.status} ${JSON.stringify(skipped.body).slice(0, 120)}`);
+
+// 打开监控后恢复采样（baseURL 不可达，但会产出失败样本，说明确实执行了）
+const enabled = await call('/dsh-speed/api/config', 'POST', {
+  targets: [{ ...kept, monitor: true }],
+});
+check('重新开启监控', enabled.status === 200 && enabled.body.config.targets[0].monitor === true);
+
 const again = await call('/dsh-speed/api/state');
 check('配置持久化', again.body.config.intervalMinutes === 2 && again.body.providers['astra-hub'].models.length === 1);
 
