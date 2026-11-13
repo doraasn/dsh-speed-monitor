@@ -89,6 +89,11 @@ const enabled = await call('/dsh-speed/api/config', 'POST', {
 });
 check('重新开启监控', enabled.status === 200 && enabled.body.config.targets[0].monitor === true);
 
+// 采样路径本身要能跑通（baseURL 不可达 → 记录 ok:0，但流程不抛错）
+const sampled = await call('/dsh-speed/api/sample', 'POST', {});
+check('开启监控后可执行采样', sampled.status === 200 && Array.isArray(sampled.body.records) && sampled.body.records.length === 1, `实际 ${sampled.status} ${JSON.stringify(sampled.body).slice(0, 120)}`);
+check('采样失败被记录为 ok:0', sampled.body.records[0].ok === 0);
+
 const again = await call('/dsh-speed/api/state');
 check('配置持久化', again.body.config.intervalMinutes === 2 && again.body.providers['astra-hub'].models.length === 1);
 
