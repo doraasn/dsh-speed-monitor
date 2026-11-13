@@ -71,10 +71,13 @@ check('自动补默认目标', pushed.body.targets.length === 1 && pushed.body.t
 
 const saved = await call('/dsh-speed/api/config', 'POST', {
   intervalMinutes: 2,
-  targets: [{ id: 't1', provider: 'astra-hub', model: 'deepseek-v4.1-flash', effort: 'none' }],
+  targets: [{ id: 't1', provider: 'astra-hub', model: 'deepseek-v4.1-flash', effort: 'none', intervalMinutes: 7, runs: 2, prompt: '自定义任务', monitor: false }],
 });
 check('配置保存成功', saved.status === 200 && saved.body.config.intervalMinutes === 2);
 check('目标落盘', saved.body.config.targets[0].effort === 'none');
+// 回归：每个模型的间隔/次数/任务/监控开关必须在保存后保留
+const kept = saved.body.config.targets[0];
+check('每模型字段不丢', kept.intervalMinutes === 7 && kept.runs === 2 && kept.prompt === '自定义任务' && kept.monitor === false, JSON.stringify(kept));
 
 const again = await call('/dsh-speed/api/state');
 check('配置持久化', again.body.config.intervalMinutes === 2 && again.body.providers['astra-hub'].models.length === 1);
